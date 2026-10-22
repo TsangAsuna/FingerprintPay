@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
@@ -49,37 +51,198 @@ public final class SettingEntry {
     private static final String HOST_PACKAGE = BuildConfig.APPLICATION_ID;
 
     /**
-     * 组件类名必须用 <b>namespace</b>（com.surcumference.fingerprint），不能用 applicationId。
-     * 本工程两者不同：namespace=com.surcumference.fingerprint，applicationId=com.surcumference.fingerprintpay，
-     * 而 Manifest 里的相对名 {@code .activity.ConfigActivity} 是按 namespace 解析的，
-     * 已核对构建产物中的真实组件名为 com.surcumference.fingerprint.activity.ConfigActivity。
-     * 这里用字符串而非 {@code ConfigActivity.class} 是为了避免在宿主进程里触发类加载。
+     * 候选配置页，按优先级排列。主候选失败（组件不存在、未导出、被停用、装在分身用户）时逐个降级：
+     * 7.x 统一配置页 → 7.x 启动页（{@code ConfigActivity} 的子类，Manifest 中必然 exported）→ 6.x 旧设置页。
+     *
+     * <p>类名必须用 <b>namespace</b>（com.surcumference.fingerprint）而不是 applicationId
+     * （com.surcumference.fingerprintpay）：本工程两者不同，而 Manifest 里的相对名
+     * {@code .activity.ConfigActivity} 是按 namespace 解析的，构建产物中的真实组件名是
+     * com.surcumference.fingerprint.activity.ConfigActivity（已解析 APK 二进制清单确认）。
+     * 用字符串常量而非 {@code ConfigActivity.class}，是为了避免在宿主进程里触发类加载。
      */
-    private static final String CONFIG_ACTIVITY_CLASS = "com.surcumference.fingerprint.activity.ConfigActivity";
+    private static final String[] CONFIG_ACTIVITY_CANDIDATES = {
+            "com.surcumference.fingerprint.activity.ConfigActivity",
+            "com.surcumference.fingerprint.activity.HomeActivity",
+            "com.surcumference.fingerprint.activity.SettingsActivity",
+    };
+
+    /**
+     * 入口要打开的配置页必须 {@code exported=true}，而这个改动是本 fork 在 7.0.3 才引入的
+     * （此前 7.0.0 ~ 7.0.2 的 ConfigActivity 都是 exported=false，跨 UID 根本起不来）。
+     * 因此低于本版本的 APK 一律提示升级，而不是让用户去点一个注定失败的入口。
+     */
+    private static final String MIN_SUPPORTED_VERSION_NAME = BuildConfig.VERSION_NAME;
 
     private SettingEntry() {
     }
 
-    /** 打开指纹支付的统一配置页。 */
+    /** 已安装的指纹支付 APK 的关键信息，用于失败时给出可定位的结论。 */
+    private static final class Installed {
+        private final String versionName;
+        private final int activityCount;
+
+        private Installed(String versionName, int activityCount) {
+            this.versionName = versionName;
+            this.activityCount = activityCount;
+        }
+
+        /** @return 版本号可比较时为负/零/正；版本号缺失或无法解析时返回 0（按「相同」处理） */
+        private int compareTo(String other) {
+            if (versionName == null) {
+                return 0;
+            }
+            return compareVersions(versionName, other);
+        }
+
+        private String describe() {
+            return versionName == null ? "未知版本" : versionName;
+        }
+    }
+
+    /** 逐段数值比较 "7.0.2" 与 "7.0.3"；任一段缺失按 0 计，段内只取前导数字。 */
+    private static int compareVersions(String a, String b) {
+        String[] left = a.split("\\.");
+        String[] right = b.split("\\.");
+        int length = Math.max(left.length, right.length);
+        for (int i = 0; i < length; i++) {
+            int x = i < left.length ? leadingInt(left[i]) : 0;
+            int y = i < right.length ? leadingInt(right[i]) : 0;
+            if (x != y) {
+                return x < y ? -1 : 1;
+            }
+        }
+        return 0;
+    }
+
+    private static int leadingInt(String part) {
+        StringBuilder digits = new StringBuilder();
+        for (int i = 0; i < part.length(); i++) {
+            char c = part.charAt(i);
+            if (c < '0' || c > '9') {
+                break;
+            }
+            digits.append(c);
+        }
+        if (digits.length() == 0) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(digits.toString());
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    /**
+     * 打开指纹支付的统一配置页。
+     *
+     * <p>必须做到「失败必报，且报出可定位的原因」。此前只试一个显式组件，用户侧一旦出现
+     * {@code ActivityNotFoundException}，既可能是 APK 根本没装、装的是 6.x，也可能是装了
+     * 7.0.2 及更早版本（那一版的 {@code ConfigActivity} 还是 {@code exported=false}，
+     * 跨 UID 起不来），还可能装在分身用户或被系统停用——而旧代码只会甩一句异常类名。
+     * 现在按「查版本 → 版本不符直接提示升级 → 逐级降级启动 → 汇总诊断」四步走。
+     */
     public static void open(Context context) {
         if (context == null) {
             return;
         }
+        Context from = context.getApplicationContext();
+        if (from == null) {
+            from = context;
+        }
+
+        // 1) 先问清楚用户装的是什么。查不到不立刻下结论——Android 11+ 宿主可能看不到本包，
+        //    但显式 Intent 仍有机会启动成功，所以真正的判定留给后面的启动尝试。
+        Installed installed = queryInstalled(from);
+        L.d("SettingEntry: installed " + HOST_PACKAGE + " " + (installed == null
+                ? "<not visible>" : installed.describe() + " activities=" + installed.activityCount));
+
+        int compare = installed == null ? 0 : installed.compareTo(MIN_SUPPORTED_VERSION_NAME);
+        if (compare < 0) {
+            toast(from, "当前安装的指纹支付是 " + installed.describe()
+                    + "，该版本的配置页未对外导出，无法从其他应用内打开，请升级到 " + MIN_SUPPORTED_VERSION_NAME);
+            return;
+        }
+
+        // 2) 依次尝试候选配置页，任何一路成功即返回
+        for (String clz : CONFIG_ACTIVITY_CANDIDATES) {
+            if (startComponent(from, clz)) {
+                return;
+            }
+        }
+
+        // 3) 再退一步：直接拉起应用的启动入口（Manifest 里的 .Main activity-alias）
+        if (startLaunchIntent(from)) {
+            return;
+        }
+
+        // 4) 全部失败：给出能区分「没装」和「装了但打不开」的结论
+        if (installed == null) {
+            L.e("SettingEntry: host package not installed or not visible: " + HOST_PACKAGE);
+            toast(from, "未检测到「指纹支付」APK：请安装模块配套 APK，或在 Root 管理器中打开该模块的 WebUI");
+        } else {
+            L.e("SettingEntry: no config page found in " + HOST_PACKAGE + " " + installed.describe());
+            toast(from, "打开指纹支付设置失败：已安装 " + installed.describe()
+                    + " 但找不到配置页，请确认它装在本机主用户且未被停用；也可改用 Root 管理器里的模块 WebUI");
+        }
+    }
+
+    /** 查已安装版本；未安装或宿主不可见时返回 null。 */
+    private static Installed queryInstalled(Context from) {
+        try {
+            PackageManager pm = from.getPackageManager();
+            if (pm == null) {
+                return null;
+            }
+            PackageInfo info = pm.getPackageInfo(HOST_PACKAGE, PackageManager.GET_ACTIVITIES);
+            if (info == null) {
+                return null;
+            }
+            int count = info.activities == null ? 0 : info.activities.length;
+            return new Installed(info.versionName, count);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static boolean startComponent(Context from, String clz) {
         try {
             Intent intent = new Intent();
-            intent.setComponent(new ComponentName(HOST_PACKAGE, CONFIG_ACTIVITY_CLASS));
+            intent.setComponent(new ComponentName(HOST_PACKAGE, clz));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
-            Context app = context.getApplicationContext();
-            (app == null ? context : app).startActivity(intent);
+            from.startActivity(intent);
+            L.d("SettingEntry: opened " + clz);
+            return true;
         } catch (Exception e) {
-            // 常见原因：ConfigActivity 被改成 exported=false，或 APK 未安装/被停用/签名不匹配导致未更新
-            L.e("SettingEntry: failed to open config page", e);
-            // 不能静默：否则用户只感到"点了没反应"，无从判断是入口坏了还是目标页不存在
-            try {
-                Toaster.showShort("打开指纹支付设置失败：" + e.getClass().getSimpleName());
-            } catch (Exception ignored) {
-                // Toaster 在个别宿主上可能不可用，退回纯日志
+            // ActivityNotFoundException（组件不存在/未安装）、SecurityException（未导出）都会走到这里
+            L.d("SettingEntry: cannot start " + clz + ": " + e);
+            return false;
+        }
+    }
+
+    private static boolean startLaunchIntent(Context from) {
+        try {
+            Intent intent = from.getPackageManager().getLaunchIntentForPackage(HOST_PACKAGE);
+            if (intent == null) {
+                L.d("SettingEntry: no launch intent for " + HOST_PACKAGE);
+                return false;
             }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            from.startActivity(intent);
+            L.d("SettingEntry: opened launcher intent for " + HOST_PACKAGE);
+            return true;
+        } catch (Exception e) {
+            L.d("SettingEntry: cannot launch " + HOST_PACKAGE + ": " + e);
+            return false;
+        }
+    }
+
+    private static void toast(Context context, String message) {
+        // 不能静默：否则用户只感到"点了没反应"，无从判断是入口坏了还是目标页不存在
+        try {
+            Toaster.showLong(message);
+        } catch (Exception ignored) {
+            // Toaster 在个别宿主上可能不可用，退回纯日志
         }
     }
 
