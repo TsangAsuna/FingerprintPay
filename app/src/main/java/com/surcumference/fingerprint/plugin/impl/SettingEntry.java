@@ -15,6 +15,7 @@ import android.view.ViewGroup;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.hjq.toast.Toaster;
 import com.surcumference.fingerprint.BuildConfig;
 import com.surcumference.fingerprint.Lang;
 import com.surcumference.fingerprint.R;
@@ -71,8 +72,14 @@ public final class SettingEntry {
             Context app = context.getApplicationContext();
             (app == null ? context : app).startActivity(intent);
         } catch (Exception e) {
-            // 常见原因：ConfigActivity 被改成 exported=false，或 APK 未安装/被停用
+            // 常见原因：ConfigActivity 被改成 exported=false，或 APK 未安装/被停用/签名不匹配导致未更新
             L.e("SettingEntry: failed to open config page", e);
+            // 不能静默：否则用户只感到"点了没反应"，无从判断是入口坏了还是目标页不存在
+            try {
+                Toaster.showShort("打开指纹支付设置失败：" + e.getClass().getSimpleName());
+            } catch (Exception ignored) {
+                // Toaster 在个别宿主上可能不可用，退回纯日志
+            }
         }
     }
 

@@ -76,6 +76,11 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
     private PaymentMethodWatch mPaymentMethodWatch;
     /** 已注入过右上角菜单的设置页，防止 onResume 重复添加菜单项。 */
     private final WeakHashMap<Activity, Boolean> mSettingsMenuInjected = new WeakHashMap<>();
+    /**
+     * 已插入过入口的列表。ListView.addHeaderView 在 setAdapter 之前不会把 header 挂成子 View，
+     * hasEntry() 遍历不到，必须按 ListView 单独记一份，否则 Fragment 轮询会注入出一堆重复条目。
+     */
+    private final WeakHashMap<View, Boolean> mSettingsInjected = new WeakHashMap<>();
     /** 8.0.20+ 微信设置页是 LauncherUI 内的 Fragment，用它观察栈顶 Fragment。 */
     private FragmentObserver mFragmentObserver;
 
@@ -323,8 +328,11 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
             if (fragmentRootView == null) {
                 return;
             }
-            injectSettingsHeader(fragmentRootView, fragmentObject.getClass().getName(),
-                    fragmentRootView.getContext());
+            // 注入成功就停掉观察：全局布局回调触发极频繁，继续轮询只会做无用功
+            if (injectSettingsHeader(fragmentRootView, fragmentObject.getClass().getName(),
+                    fragmentRootView.getContext())) {
+                stopFragmentObserver();
+            }
         });
         mFragmentObserver = observer;
     }
@@ -338,20 +346,24 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
     }
 
     /** 老版设置页：把入口插到设置列表顶部。fragment 路径传入的是 Fragment 根 View。 */
-    private void injectSettingsHeader(View root, String targetClassName, Context context) {
+    private boolean injectSettingsHeader(View root, String targetClassName, Context context) {
         if (SettingEntry.hasEntry(root)) {
-            return;
+            return false;
         }
         final boolean vas = targetClassName.contains("com.tencent.mm.ui.vas.VASCommon");
         if (vas && ViewUtils.findViewByText(root, "通用", "一般", "General") == null) {
             // VAS 容器承载大量页面，只有设置主页才注入
-            return;
+            return false;
         }
         final ListView listView = (ListView) ViewUtils.findViewByName(root, "android", "list");
         if (listView == null) {
             // 设置页可能不用 android:id/list（如改用 RecyclerView），退化为按锚点行插入
-            SettingEntry.injectAboveAnchor(root, context, "通用", "一般", "General", "账号安全", "账号与安全");
-            return;
+            return SettingEntry.injectAboveAnchor(root, context, "通用", "一般", "General", "账号安全", "账号与安全");
+        }
+        // addHeaderView 在 setAdapter 之前只把 header 存进 mHeaderViewInfos，不会真正挂成子 View，
+        // 因此 hasEntry() 遍历不到它，轮询会反复注入出一堆重复条目。这里按 ListView 本身再记一份。
+        if (mSettingsInjected.containsKey(listView)) {
+            return false;
         }
         final LinearLayout section = SettingEntry.buildSection(context, StyleUtils.isDarkMode(context), 15);
         section.setLayoutParams(new AbsListView.LayoutParams(
@@ -362,6 +374,8 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
             // setAdapter 之后再 addHeaderView 会抛此异常，改为插到列表的父容器中（视觉等效）
             insertAbove(listView, section);
         }
+        mSettingsInjected.put(listView, Boolean.TRUE);
+        return true;
     }
 
     /** 把视图插到目标视图的前面，用于无法 addHeaderView 的场景。 */
