@@ -137,15 +137,24 @@ public final class SettingEntry {
      * 列表行容器，宿主改版时更容易存活。
      */
     public static boolean injectAboveAnchor(Activity activity, String... anchorTexts) {
-        if (activity == null) {
+        return activity == null ? false
+                : injectAboveAnchor(activity.getWindow().getDecorView(), activity, anchorTexts);
+    }
+
+    /**
+     * 同 {@link #injectAboveAnchor(Activity, String...)}，但作用于指定根视图。
+     * 宿主设置页是 Fragment 时（如微信 8.0.20+ 的 VASCommonFragment），
+     * 只能用 Fragment 根视图而不能用 Activity 的 decorView。
+     */
+    public static boolean injectAboveAnchor(View root, Context context, String... anchorTexts) {
+        if (root == null || context == null) {
             return false;
         }
         try {
-            View decorView = activity.getWindow().getDecorView();
-            if (hasEntry(decorView)) {
+            if (hasEntry(root)) {
                 return false;
             }
-            View anchor = ViewUtils.findViewByText(decorView, anchorTexts);
+            View anchor = ViewUtils.findViewByText(root, anchorTexts);
             if (anchor == null) {
                 return false;
             }
@@ -162,7 +171,7 @@ public final class SettingEntry {
             if (index < 0) {
                 return false;
             }
-            LinearLayout section = buildSection(activity, StyleUtils.isDarkMode(activity), 15);
+            LinearLayout section = buildSection(context, StyleUtils.isDarkMode(context), 15);
             parent.addView(section, index, new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             L.d("SettingEntry injected above anchor: " + anchorTexts[0]);

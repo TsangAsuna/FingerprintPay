@@ -133,10 +133,11 @@ public class TaobaoBasePlugin implements IAppPlugin {
             int versionCode = getVersionCode(activity);
             // 设置页注入「指纹支付」入口（上游 7.0.0 起移除了应用内入口，这里恢复）
             if (isTaobaoSettingsActivity(activityClzName)) {
-                Task.onMain(250, () -> SettingEntry.injectAboveAnchor(activity,
-                        "支付设置", "账号与安全", "帐号与安全", "账号管理", "设置"));
-                Task.onMain(1000, () -> SettingEntry.injectAboveAnchor(activity,
-                        "支付设置", "账号与安全", "帐号与安全", "账号管理", "设置"));
+                // 设置页可能是后创建的 Fragment，重试几次；injectAboveAnchor 幂等，重复调用安全
+                for (long delay : new long[]{250, 1000, 2500}) {
+                    Task.onMain(delay, () -> SettingEntry.injectAboveAnchor(activity,
+                            "支付设置", "账号与安全", "帐号与安全", "账号管理", "设置"));
+                }
             }
             if (activityClzName.contains(".PayPwdDialogActivity")
                     || activityClzName.contains(".MspContainerActivity")

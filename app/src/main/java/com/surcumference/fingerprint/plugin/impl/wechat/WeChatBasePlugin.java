@@ -28,6 +28,7 @@ import com.surcumference.fingerprint.plugin.inf.IMockCurrentUser;
 import com.surcumference.fingerprint.plugin.inf.OnFingerprintVerificationOKListener;
 import com.surcumference.fingerprint.plugin.impl.SettingEntry;
 import com.surcumference.fingerprint.util.ActivityContext;
+import com.surcumference.fingerprint.util.FragmentObserver;
 import com.surcumference.fingerprint.util.PaymentController;
 import com.surcumference.fingerprint.util.ActivityViewObserver;
 import com.surcumference.fingerprint.util.ActivityViewObserverHolder;
@@ -75,6 +76,8 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
     private PaymentMethodWatch mPaymentMethodWatch;
     /** 已注入过右上角菜单的设置页，防止 onResume 重复添加菜单项。 */
     private final WeakHashMap<Activity, Boolean> mSettingsMenuInjected = new WeakHashMap<>();
+    /** 8.0.20+ 微信设置页是 LauncherUI 内的 Fragment，用它观察栈顶 Fragment。 */
+    private FragmentObserver mFragmentObserver;
 
     // LiteApp payment activity support (WeChat 8.0.65+)
     private ViewTreeObserver.OnGlobalLayoutListener mKeyboardLayoutListener;
@@ -166,6 +169,10 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
         // 设置页注入「指纹支付」入口。与支付检测互不影响，故独立于下方分支。
         if (isWeChatSettingsActivity(activityClzName)) {
             Task.onMain(100, () -> injectSettingsEntry(activity));
+        } else if (getVersionCode(activity) >= Constant.WeChat.WECHAT_VERSION_CODE_8_0_20
+                && activityClzName.contains("com.tencent.mm.ui.LauncherUI")) {
+            // 8.0.20+ 设置页是 LauncherUI 内的 Fragment，Activity 层看不到，需观察 Fragment 栈
+            startFragmentObserver(activity);
         }
         if (isLiteAppPaymentActivity(activityClzName)) {
             try {
@@ -273,6 +280,8 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
     /** 微信设置页。老版走 ListView 头部，8.0.66+ 的 MainSettingsUI 走右上角菜单。 */
     private static final String WECHAT_SETTINGS_UI = "com.tencent.mm.plugin.setting.ui.setting.SettingsUI";
     private static final String WECHAT_MAIN_SETTINGS_UI = "com.tencent.mm.plugin.setting.ui.setting_new.MainSettingsUI";
+    /** 8.0.20+ 设置页的载体 Fragment，跑在 LauncherUI 内。 */
+    private static final String WECHAT_SETTINGS_FRAGMENT = "com.tencent.mm.ui.vas.VASCommonFragment";
 
     private static boolean isWeChatSettingsActivity(String name) {
         if (name == null) {
@@ -295,29 +304,56 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
             if (name.equals(WECHAT_MAIN_SETTINGS_UI)) {
                 injectSettingsOptionMenu(activity);
             } else {
-                injectSettingsHeader(activity, name);
+                injectSettingsHeader(activity.getWindow().getDecorView(), name, activity);
             }
         } catch (Exception e) {
             L.e("WeChat settings entry injection failed", e);
         }
     }
 
-    /** 老版设置页：把入口插到设置列表顶部。 */
-    private void injectSettingsHeader(Activity activity, String targetClassName) {
-        final View decorView = activity.getWindow().getDecorView();
-        if (SettingEntry.hasEntry(decorView)) {
+    /**
+     * 8.0.20+ 设置页是 {@code LauncherUI} 内的 {@code VASCommonFragment}，
+     * Activity 层拿不到，只能观察 Fragment 栈。
+     */
+    private void startFragmentObserver(Activity activity) {
+        stopFragmentObserver();
+        FragmentObserver observer = new FragmentObserver(activity);
+        observer.setFragmentIdentifyClassName(WECHAT_SETTINGS_FRAGMENT);
+        observer.start((source, fragmentObject, fragmentRootView) -> {
+            if (fragmentRootView == null) {
+                return;
+            }
+            injectSettingsHeader(fragmentRootView, fragmentObject.getClass().getName(),
+                    fragmentRootView.getContext());
+        });
+        mFragmentObserver = observer;
+    }
+
+    private void stopFragmentObserver() {
+        FragmentObserver observer = mFragmentObserver;
+        if (observer != null) {
+            observer.stop();
+            mFragmentObserver = null;
+        }
+    }
+
+    /** 老版设置页：把入口插到设置列表顶部。fragment 路径传入的是 Fragment 根 View。 */
+    private void injectSettingsHeader(View root, String targetClassName, Context context) {
+        if (SettingEntry.hasEntry(root)) {
             return;
         }
         final boolean vas = targetClassName.contains("com.tencent.mm.ui.vas.VASCommon");
-        if (vas && ViewUtils.findViewByText(decorView, "通用", "一般", "General") == null) {
+        if (vas && ViewUtils.findViewByText(root, "通用", "一般", "General") == null) {
             // VAS 容器承载大量页面，只有设置主页才注入
             return;
         }
-        final ListView listView = (ListView) ViewUtils.findViewByName(decorView, "android", "list");
+        final ListView listView = (ListView) ViewUtils.findViewByName(root, "android", "list");
         if (listView == null) {
+            // 设置页可能不用 android:id/list（如改用 RecyclerView），退化为按锚点行插入
+            SettingEntry.injectAboveAnchor(root, context, "通用", "一般", "General", "账号安全", "账号与安全");
             return;
         }
-        final LinearLayout section = SettingEntry.buildSection(activity, StyleUtils.isDarkMode(activity), 15);
+        final LinearLayout section = SettingEntry.buildSection(context, StyleUtils.isDarkMode(context), 15);
         section.setLayoutParams(new AbsListView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         try {
@@ -364,7 +400,7 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
         } catch (Exception e) {
             // 反射失败时退化为：往设置页顶部插一个条目
             L.e("addTextOptionMenu unavailable, falling back to header injection", e);
-            injectSettingsHeader(activity, activity.getClass().getName());
+            injectSettingsHeader(activity.getWindow().getDecorView(), activity.getClass().getName(), activity);
         }
     }
 
@@ -382,6 +418,10 @@ public class WeChatBasePlugin implements IAppPlugin, IMockCurrentUser {
             if (mPaymentMethodWatch != null && mPaymentMethodWatch.activity == activity)
                 stopPaymentMethodWatch();
             clearObservation(activity);
+            // 离开微信主界面即停止 Fragment 观察，避免全局布局回调常驻
+            if (activity != null && activity.getClass().getName().contains("com.tencent.mm.ui.LauncherUI")) {
+                stopFragmentObserver();
+            }
             L.d("Activity onPause =", activity);
             final String activityClzName = activity.getClass().getName();
             if (!activityClzName.contains(".WalletPayUI") && !activityClzName.contains(".UIPageFragmentActivity")) {
