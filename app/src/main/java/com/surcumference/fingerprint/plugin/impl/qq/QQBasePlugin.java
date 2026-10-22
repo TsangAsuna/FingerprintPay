@@ -122,10 +122,11 @@ public class QQBasePlugin implements IAppPlugin, IMockCurrentUser {
             }
             // 设置页注入「指纹支付」入口（上游 7.0.0 起移除了应用内入口，这里恢复）
             if (isQQSettingsActivity(activity)) {
-                Task.onMain(250, () -> SettingEntry.injectAboveAnchor(activity,
-                        "账号管理", "帐号管理", "账号与安全", "帐号与安全", "通用"));
-                Task.onMain(1000, () -> SettingEntry.injectAboveAnchor(activity,
-                        "账号管理", "帐号管理", "账号与安全", "帐号与安全", "通用"));
+                // 设置页可能是后创建的 Fragment，重试几次；injectAboveAnchor 幂等，重复调用安全
+                for (long delay : new long[]{250, 1000, 2500}) {
+                    Task.onMain(delay, () -> SettingEntry.injectAboveAnchor(activity,
+                            "账号管理", "帐号管理", "账号与安全", "帐号与安全", "通用"));
+                }
             }
             if (activityClzName.contains(".QWalletPluginProxyActivity")
                 || activityClzName.contains(".QWalletToolFragmentActivity")) {

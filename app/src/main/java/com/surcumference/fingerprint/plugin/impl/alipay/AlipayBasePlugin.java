@@ -111,9 +111,12 @@ public class AlipayBasePlugin implements IAppPlugin {
             mCurrentActivity = activity;
             String name = activity.getClass().getName();
             // 设置页注入「指纹支付」入口（上游 7.0.0 起移除了应用内入口，这里恢复）
+            // 设置页可能是后创建的 Fragment，重试几次；injectAboveAnchor 幂等，重复调用安全
             if (isAlipaySettingsActivity(name)) {
-                Task.onMain(250, () -> SettingEntry.injectAboveAnchor(activity,
-                        "支付密码", "支付密碼", "Payment Password", "生物支付"));
+                for (long delay : new long[]{250, 1000, 2500}) {
+                    Task.onMain(delay, () -> SettingEntry.injectAboveAnchor(activity,
+                            "支付密码", "支付密碼", "Payment Password", "生物支付"));
+                }
             }
             if (!(name.contains(".PayPwdDialogActivity") || name.contains(".PayPwdFullActivity")
                     || name.contains(".MspContainerActivity") || name.contains(".FlyBirdWindowActivity")
