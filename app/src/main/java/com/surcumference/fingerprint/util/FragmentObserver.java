@@ -32,6 +32,7 @@ public class FragmentObserver {
 
     private final WeakReference<Activity> mActivityRef;
     private final Handler mTasksHandler = new Handler(Looper.getMainLooper());
+    private final Runnable mPollRunnable;
     private boolean mRunning;
     private String mFragmentIdentifyClassName;
     private ViewTreeObserver.OnGlobalLayoutListener mOnGlobalLayoutListener;
@@ -40,6 +41,9 @@ public class FragmentObserver {
 
     public FragmentObserver(Activity activity) {
         this.mActivityRef = new WeakReference<>(activity);
+        // 必须在 mActivityRef 赋值之后构造：lambda 引用了该字段，
+        // 若放在字段初始化表达式里，javac 会因确定性赋值报 "might not have been initialized"
+        this.mPollRunnable = this::pollFragment;
     }
 
     public void setFragmentIdentifyClassName(String fragmentIdentifyClassName) {
@@ -92,7 +96,7 @@ public class FragmentObserver {
         }
     }
 
-    private final Runnable mPollRunnable = () -> {
+    private void pollFragment() {
         if (!mRunning) {
             return;
         }
@@ -125,7 +129,7 @@ public class FragmentObserver {
         } catch (Exception e) {
             L.e("FragmentObserver poll failed", e);
         }
-    };
+    }
 
     /** 按名调用无参方法，沿类层级查找，避免依赖已删除的 ReflectionUtils。 */
     @Nullable
