@@ -8,3 +8,6 @@
 /.idea
 /app/release/
 /module/build/
+
+# CI-generated signing keystore (fork)
+app/keystore.jks

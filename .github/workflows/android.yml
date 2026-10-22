@@ -33,6 +33,14 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
           cache: gradle
+      # 签名密钥缓存：fork 没有 SIGNING_STORE_BASE64 密钥时，keytool 每次会生成
+      # 一把全新的随机 keystore，导致新旧 APK 签名不一致、覆盖安装被系统拒绝
+      # （表现为"模块是新的但点击设置入口没反应"）。用 cache 把它固定下来。
+      - name: Restore fork signing keystore
+        uses: actions/cache@v6
+        with:
+          path: app/keystore.jks
+          key: fork-signing-keystore-v1-${{ github.repository }}
       - name: Prepare release signing
         env:
           SECRET_STORE: ${{ secrets.SIGNING_STORE_BASE64 }}
@@ -46,7 +54,12 @@ jobs:
             ALIAS="$SECRET_ALIAS"
             KEY_PASSWORD="$SECRET_KEY_PASSWORD"
             STORE_PASSWORD="$SECRET_STORE_PASSWORD"
-            echo "Using the release keystore supplied through repository secrets"
+            echo "::notice title=Signing::Using the release keystore from repository secrets."
+          elif [ -s app/keystore.jks ]; then
+            ALIAS="fingerprintpay"
+            KEY_PASSWORD="fingerprintpay"
+            STORE_PASSWORD="fingerprintpay"
+            echo "::notice title=Signing::Reusing the cached fork keystore, so this APK can upgrade the previous fork build in place."
           else
             ALIAS="fingerprintpay"
             KEY_PASSWORD="fingerprintpay"
@@ -55,7 +68,7 @@ jobs:
               -storepass "$STORE_PASSWORD" -keypass "$KEY_PASSWORD" -alias "$ALIAS" \
               -keyalg RSA -keysize 2048 -validity 10000 \
               -dname "CN=FingerprintPay Fork, OU=CI, O=Self-Signed, L=NA, ST=NA, C=CN"
-            echo "::notice title=Self-signed CI keystore::No SIGNING_STORE_BASE64 secret found, generated a throwaway keystore. Uninstall the official build before installing this APK."
+            echo "::notice title=Signing::No keystore secret and no cache, generated a fresh one. If you previously installed another fork build, uninstall it first."
           fi
           chmod 600 app/keystore.jks
           {
