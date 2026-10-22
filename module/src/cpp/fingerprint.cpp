@@ -31,7 +31,12 @@ void fingerprintPre(JNIEnv* env, jstring* appDataDir, jstring* niceName, int uid
     const char* value = env->GetStringUTFChars(*niceName, nullptr);
     if (!value) return;
     process = value; env->ReleaseStringUTFChars(*niceName, value);
-    for (int i = 0; i < 5; ++i) if (process == packages[i] || (i == 3 && process == "com.tencent.mobileqq:tool")) { target = i; break; }
+    for (int i = 0; i < 5; ++i) {
+        // Match the package process and every one of its ":xxx" sub-processes,
+        // mirroring the Xposed backend which injects into all host processes.
+        const std::string prefix = std::string(packages[i]) + ":";
+        if (process == packages[i] || process.compare(0, prefix.size(), prefix) == 0) { target = i; break; }
+    }
     if (target < 0) return;
 #ifdef FP_DEBUG_FILE_DEX
     appData.clear();
