@@ -67,11 +67,12 @@ public final class SettingEntry {
     };
 
     /**
-     * 入口要打开的配置页必须 {@code exported=true}，而这个改动是本 fork 在 7.0.3 才引入的
-     * （此前 7.0.0 ~ 7.0.2 的 ConfigActivity 都是 exported=false，跨 UID 根本起不来）。
-     * 因此低于本版本的 APK 一律提示升级，而不是让用户去点一个注定失败的入口。
+     * 入口要打开的配置页必须 {@code exported=true}，而这个改动是本 fork 在 7.0.3 才引入的：
+     * 7.0.0 ~ 7.0.2 以及 6.x 的 {@code ConfigActivity} 都是 exported=false，跨 UID 根本起不来。
+     * 因此低于 7.0.3 的 APK 一律提示升级，而不是让用户去点一个注定失败的入口。
+     * 这里刻意不随 {@code BuildConfig.VERSION_NAME} 走——它标记的是「历史上修好导出的那一版」。
      */
-    private static final String MIN_SUPPORTED_VERSION_NAME = BuildConfig.VERSION_NAME;
+    private static final String MIN_SUPPORTED_VERSION_NAME = "7.0.3";
 
     private SettingEntry() {
     }
@@ -160,7 +161,8 @@ public final class SettingEntry {
         int compare = installed == null ? 0 : installed.compareTo(MIN_SUPPORTED_VERSION_NAME);
         if (compare < 0) {
             toast(from, "当前安装的指纹支付是 " + installed.describe()
-                    + "，该版本的配置页未对外导出，无法从其他应用内打开，请升级到 " + MIN_SUPPORTED_VERSION_NAME);
+                    + "，该版本的配置页未对外导出，无法从其他应用内打开，请升级到 "
+                    + MIN_SUPPORTED_VERSION_NAME + " 或更新版本");
             return;
         }
 
